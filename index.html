@@ -145,6 +145,7 @@ code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:11px}
     <div class="pred-title" id="pred-title">📈 6월 예측 — 발주주기 정밀 분석</div>
     <div class="pred-grid" id="pred-grid"></div>
     <div class="pred-breakdown" id="pred-breakdown"></div>
+    <div style="margin-top:6px;text-align:right"><button onclick="exportPredExcel()" style="background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer">📥 예측 발주처 엑셀 다운로드</button></div>
   </div>
 </div>
 
@@ -360,14 +361,38 @@ function onMemoInput(el){
 // 페이지 로드 시 한 번만 Firebase에서 전체 메모를 가져와 캐시에 저장
 // Firebase의 sales_data/sales_meta를 불러와 S(매출 상태)에 반영 (다른 기기에서 입력한 매출 동기화)
 function loadSalesCacheOnce(){
-  // 로컬스토리지 데이터를 S에 적용 (Firebase 연동 임시 비활성화)
-  const localRows=loadJ(STORE_SALES,[]);
-  if(localRows.length>0){
-    S=JSON.parse(JSON.stringify(BASE));
-    ITEM_MONTHLY_CLEAN=JSON.parse(JSON.stringify(BASE_ITEM_CLEAN));
-    applySales(localRows,false);
-  }
-  return Promise.resolve();
+  if(!salesDB) return Promise.resolve();
+  return Promise.all([
+    salesDB.ref('sales_data').once('value'),
+    salesDB.ref('sales_meta').once('value')
+  ]).then(([dataSnap,metaSnap])=>{
+    const remoteRows=dataSnap.val()||[];
+    const meta=metaSnap.val()||{};
+    const localRows=loadJ(STORE_SALES,[]);
+    if(remoteRows.length>0){
+      // Firebase에 데이터 있으면 Firebase 우선
+      localStorage.setItem(STORE_SALES,JSON.stringify(remoteRows));
+      if(meta.day) localStorage.setItem(STORE_DAY,meta.day);
+      if(meta.last6) localStorage.setItem('dash_last6_v4',JSON.stringify(meta.last6));
+      S=JSON.parse(JSON.stringify(BASE));
+      ITEM_MONTHLY_CLEAN=JSON.parse(JSON.stringify(BASE_ITEM_CLEAN));
+      applySales(remoteRows,false);
+    } else if(localRows.length>0){
+      // Firebase 비어있고 로컬에 데이터 있으면 Firebase에 올려서 동기화
+      S=JSON.parse(JSON.stringify(BASE));
+      ITEM_MONTHLY_CLEAN=JSON.parse(JSON.stringify(BASE_ITEM_CLEAN));
+      applySales(localRows,false);
+      _isSavingSales=true;
+      salesDB.ref('sales_data').set(localRows)
+        .then(()=>setTimeout(()=>{ _isSavingSales=false; },3000))
+        .catch(()=>{ _isSavingSales=false; });
+      salesDB.ref('sales_meta').set({
+        day: localStorage.getItem(STORE_DAY)||String(REF_DAY),
+        last6: loadJ('dash_last6_v4',{}),
+        updated: new Date().toISOString()
+      }).catch(()=>{});
+    }
+  }).catch(err=>console.error('매출 동기화 실패',err));
 }
 
 // ── Firebase 리얼타임 자동 동기화 ────────────────────────
@@ -376,7 +401,33 @@ let _isSavingSales=false;
 function startRealtimeSync(){
   if(!salesDB) return;
 
-  // (매출 Firebase 리스너 임시 비활성화)
+  // 매출 데이터 변경 감지 (다른 기기에서 변경 시 자동 반영)
+  salesDB.ref('sales_data').on('value', snap=>{
+    if(_isSavingSales) return;
+    const remoteRows=snap.val()||[];
+    const local=loadJ(STORE_SALES,[]);
+    if(JSON.stringify(remoteRows)===JSON.stringify(local)) return;
+    if(remoteRows.length===0) return;
+    localStorage.setItem(STORE_SALES,JSON.stringify(remoteRows));
+    S=JSON.parse(JSON.stringify(BASE));
+    ITEM_MONTHLY_CLEAN=JSON.parse(JSON.stringify(BASE_ITEM_CLEAN));
+    applySales(remoteRows,false);
+    renderAll();
+    const cur=document.querySelector('.tab-inner.on');
+    if(cur){
+      const id=cur.id.replace('tab-','');
+      if(id==='order')renderOrder();
+      if(id==='item')renderItem();
+      if(id==='clist')renderClist();
+      if(id==='monthly')renderMonthly();
+    }
+  });
+  salesDB.ref('sales_meta').on('value', snap=>{
+    if(_isSavingSales) return;
+    const meta=snap.val()||{};
+    if(meta.day) localStorage.setItem(STORE_DAY,meta.day);
+    if(meta.last6) localStorage.setItem('dash_last6_v4',JSON.stringify(meta.last6));
+  });
 
   // 거래처 변경 감지
   custDB.ref('text_customers').on('value', snap=>{
@@ -1097,7 +1148,19 @@ function parseSales(){
   const prev=loadJ(STORE_SALES,[]);
   if(prev.length)applySales(prev,false);
   applySales(rows,true);
-  // (Firebase 매출 동기화 임시 비활성화 - 로컬스토리지로만 동작)
+  // Firebase에도 매출 데이터 동기화 → 모든 기기에서 공유
+  if(salesDB){
+    _isSavingSales=true;
+    const allRows=loadJ(STORE_SALES,[]);
+    salesDB.ref('sales_data').set(allRows)
+      .then(()=>setTimeout(()=>{ _isSavingSales=false; },3000))
+      .catch(err=>{ _isSavingSales=false; console.error('Firebase 매출 동기화 실패',err); });
+    salesDB.ref('sales_meta').set({
+      day: localStorage.getItem(STORE_DAY)||String(REF_DAY),
+      last6: loadJ('dash_last6_v4',{}),
+      updated: new Date().toISOString()
+    }).catch(err=>console.error('Firebase 메타 동기화 실패',err));
+  }
   const months=[...new Set(rows.map(r=>r.month))].join(', ');
   showMsg('sales-msg','✅ '+rows.length+'건 추가 ('+months+' · '+new Set(rows.map(r=>r.cust)).size+'개 거래처, 모든 기기에 동기화됨)','ok');
   renderAll();
@@ -1205,6 +1268,78 @@ function parseCust(){
 
 function clearPaste(t,m){document.getElementById(t).value='';document.getElementById(m).textContent='';}
 function showMsg(id,msg,type){const el=document.getElementById(id);el.textContent=msg;el.className='msg '+type;}
+
+function exportPredExcel(){
+  const pred=calcPred(S.customers);
+  const lastDay2=parseInt(localStorage.getItem(STORE_DAY)||String(REF_DAY));
+  const remain2=MONTH_END-lastDay2;
+  const last6days2=loadJ('dash_last6_v4',{});
+  const normKey3=s=>String(s).toLowerCase().replace(/\s+/g,'').trim();
+  function getL6x(n){
+    if(last6days2[n]!==undefined) return last6days2[n];
+    const t=normKey3(n);
+    for(const [k,dv] of Object.entries(last6days2)){if(normKey3(k)===t) return dv;}
+    return null;
+  }
+  const already=new Set(Object.keys(S.customers).filter(n=>S.customers[n]['6월']&&S.customers[n]['6월'].금액>0));
+  const orderedMay=new Set(Object.keys(S.customers).filter(n=>S.customers[n]['5월']&&S.customers[n]['5월'].금액>0));
+  const g2=[],g3=[],g4=[];
+  for(const [name,pdItem] of Object.entries(PRED)){
+    if(!pdItem.interval||pdItem.interval===0) continue;
+    const interval=pdItem.interval;
+    const has6=already.has(name);
+    const cust=S.customers[name]||{};
+    const mgr=cust.담당자||'';
+    const items=(CUST_ITEMS[name]||[]).join(', ');
+    const lastAmt=cust['5월']?cust['5월'].금액:0;
+    const lastQty=cust['5월']?cust['5월'].수량:0;
+    let cnt=0,nextDate='';
+    if(has6){
+      const l6d=getL6x(name);
+      const lastOrderDay=l6d!==null?l6d:lastDay2;
+      const daysSince=lastDay2-lastOrderDay;
+      const nextIn=Math.max(0,interval-daysSince);
+      if(nextIn<=remain2){
+        let nxt=nextIn;while(nxt<=remain2){cnt++;nxt+=interval;}
+        nextDate='6월 '+(lastDay2+Math.round(nextIn))+'일경';
+      }
+    } else {
+      const lo=LAST_ORDER[name];
+      if(lo){
+        const daysSince=lo.d2j1+lastDay2;
+        const nextIn=Math.max(0,interval-daysSince);
+        if(nextIn<=remain2){
+          let nxt=nextIn;while(nxt<=remain2){cnt++;nxt+=interval;}
+          nextDate='6월 '+(lastDay2+Math.round(nextIn))+'일경';
+        }
+      }
+    }
+    if(cnt===0) continue;
+    const extraAmt=cnt*pdItem.exp_amt;
+    const extraQty=cnt*pdItem.exp_qty;
+    const row={name,mgr,items,pat:pdItem.pat,interval,lastAmt,lastQty,extraAmt,extraQty,nextDate};
+    if(pdItem.pat==='격월'&&!has6) g2.push(row);
+    else if(has6) g3.push(row);
+    else if(['주1회이상','주1회','격주','월1회'].includes(pdItem.pat)&&!has6&&orderedMay.has(name)) g4.push(row);
+  }
+  g2.sort((a,b)=>b.extraAmt-a.extraAmt);
+  g3.sort((a,b)=>b.extraAmt-a.extraAmt);
+  g4.sort((a,b)=>b.extraAmt-a.extraAmt);
+
+  let csv='\uFEFF구분,거래처명,담당자,사용품목,발주패턴,발주간격(일),5월금액,5월수량(kg),예상추가금액,예상추가수량(kg),예상발주일\n';
+  const addRows=(items,label)=>items.forEach(r=>{
+    csv+='"'+label+'","'+r.name+'","'+r.mgr+'","'+r.items+'","'+r.pat+'",'+r.interval+','+
+      Math.round(r.lastAmt)+','+Math.round(r.lastQty)+','+Math.round(r.extraAmt)+','+Math.round(r.extraQty)+',"'+r.nextDate+'"\n';
+  });
+  addRows(g2,'②격월→6월예정');
+  addRows(g3,'③추가재발주예상');
+  addRows(g4,'④미발주발주예상');
+
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
+  a.download='6월예측발주_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();
+}
 
 function exportCSV(){
   let csv='\uFEFF거래처명,담당자,발주패턴,발주간격(일)';
