@@ -561,17 +561,18 @@ function cleanItemName(n){
   return n.trim()||'미분류';
 }
 
-function applySales(rows,save){
-  // 거래처명 정규화 매칭: 대소문자/공백 무시하고 기존 키 찾기
-  function findCustKey(inputName){
-    if(S.customers[inputName]) return inputName; // 정확히 일치하면 그대로
-    const norm=s=>String(s).toLowerCase().replace(/\s+/g,'').trim();
-    const target=norm(inputName);
-    for(const existing of Object.keys(S.customers)){
-      if(norm(existing)===target) return existing; // 기존 표기 그대로 사용
-    }
-    return inputName; // 매칭 안 되면 신규 거래처로 새로 생성
+// 거래처명 정규화 매칭: 대소문자/공백 무시하고 기존 키 찾기
+function findCustKey(inputName){
+  if(S.customers[inputName]) return inputName;
+  const norm=s=>String(s).toLowerCase().replace(/\s+/g,'').trim();
+  const target=norm(inputName);
+  for(const existing of Object.keys(S.customers)){
+    if(norm(existing)===target) return existing;
   }
+  return inputName;
+}
+
+function applySales(rows,save){
   rows.forEach(r=>{
     const m=r.month;
     const custKey=findCustKey(r.cust);
