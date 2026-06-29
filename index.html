@@ -1469,18 +1469,50 @@ function renderNewCust(){
   }
   rows.sort((a,b)=>new Date(b.tr.open_date)-new Date(a.tr.open_date));
 
+  // 전체 합계 계산
+  let totalAmt=0, totalQty=0;
+  rows.forEach(({name,tr})=>{
+    for(let m=tr.open_month;m<=6;m++){
+      const liveAmt=(S.customers[name]&&S.customers[name][m+'월']&&S.customers[name][m+'월'].금액)||(tr.months[String(m)]&&tr.months[String(m)].금액)||0;
+      const liveQty=(S.customers[name]&&S.customers[name][m+'월']&&S.customers[name][m+'월'].수량)||(tr.months[String(m)]&&tr.months[String(m)].수량)||0;
+      totalAmt+=liveAmt; totalQty+=liveQty;
+    }
+  });
+
+  // 월별 합계 계산 (개설월 전체 기준)
+  const monthTotals={};
+  for(let m=1;m<=6;m++){ monthTotals[m]={amt:0,qty:0}; }
+  rows.forEach(({name,tr})=>{
+    for(let m=tr.open_month;m<=6;m++){
+      const liveAmt=(S.customers[name]&&S.customers[name][m+'월']&&S.customers[name][m+'월'].금액)||(tr.months[String(m)]&&tr.months[String(m)].금액)||0;
+      const liveQty=(S.customers[name]&&S.customers[name][m+'월']&&S.customers[name][m+'월'].수량)||(tr.months[String(m)]&&tr.months[String(m)].수량)||0;
+      if(liveAmt>0){ monthTotals[m].amt+=liveAmt; monthTotals[m].qty+=liveQty; }
+    }
+  });
+
   document.getElementById('nc-cnt').textContent=rows.length+'개 거래처';
   const activeCnt=rows.filter(r=>r.st.k==='active').length;
   const deadCnt=rows.filter(r=>r.st.k==='dead').length;
   document.getElementById('nc-sum').innerHTML=
-    '<span>전체 '+rows.length+'개</span><span>정착 '+activeCnt+'개 ('+(rows.length?Math.round(activeCnt/rows.length*100):0)+'%)</span><span>미정착 '+deadCnt+'개</span>';
-
-  if(orderView==='bimonth'){} // no-op guard
+    '<span>전체 '+rows.length+'개</span>'+
+    '<span>정착 '+activeCnt+'개 ('+(rows.length?Math.round(activeCnt/rows.length*100):0)+'%)</span>'+
+    '<span>미정착 '+deadCnt+'개</span>'+
+    '<span style="font-weight:700;color:#1F3864">누적 '+fmt(Math.round(totalAmt/10000))+'만원 · '+fmt(Math.round(totalQty))+'kg</span>';
 
   let html='';
   rows.forEach(({name,tr,st})=>{
     const onCls=['on1','on2','on3','on4','on5','on6'];
-    // 개설월부터 6월까지만 칸 표시
+    // 거래처 전체 매출/kg 집계
+    let custTotalAmt=0, custTotalQty=0;
+    for(let m=tr.open_month;m<=6;m++){
+      const liveAmt=(S.customers[name]&&S.customers[name][m+'월']&&S.customers[name][m+'월'].금액)||(tr.months[String(m)]&&tr.months[String(m)].금액)||0;
+      const liveQty=(S.customers[name]&&S.customers[name][m+'월']&&S.customers[name][m+'월'].수량)||(tr.months[String(m)]&&tr.months[String(m)].수량)||0;
+      custTotalAmt+=liveAmt; custTotalQty+=liveQty;
+    }
+    const custSummary=custTotalAmt>0?
+      '<span style="font-size:10px;color:#1F3864;font-weight:600;margin-left:6px">'+fmt(Math.round(custTotalAmt/10000))+'만원 · '+fmt(Math.round(custTotalQty))+'kg</span>':'';
+
+    // 개설월부터 6월까지 칸 표시
     const chks=[];
     for(let m=tr.open_month;m<=6;m++){
       const trAmt=(tr.months[String(m)]&&tr.months[String(m)].금액)||0;
@@ -1497,9 +1529,10 @@ function renderNewCust(){
     }
     html+='<div class="li">'+
       '<div class="li-body">'+
-        '<div class="li-name">'+name+'</div>'+
+        '<div class="li-name">'+name+custSummary+'</div>'+
         '<div class="li-sub">'+tr.mgr+' · 개설 '+tr.open_date+' · '+tr.region+(tr.grade?' · 등급'+tr.grade:'')+'</div>'+
-        (amts.length===0?'<div style="font-size:10px;color:#dc2626;margin-top:3px">개설 후 발주 이력 없음</div>':'')+
+        (amts.length===0?'<div style="font-size:10px;color:#dc2626;margin-top:3px">개설 후 발주 이력 없음</div>':
+          '<div class="li-amts">'+amts.join('')+'</div>')+
       '</div>'+
       '<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0">'+
         '<div class="mchk-row">'+chks.join('')+'</div>'+
@@ -1507,6 +1540,23 @@ function renderNewCust(){
       '</div>'+
     '</div>';
   });
+
+  // 월별 합계 행 추가
+  const monthSummaryHtml=Object.entries(monthTotals)
+    .filter(([m,d])=>d.amt>0)
+    .map(([m,d])=>'<span class="li-a"><span class="ml">'+m+'월</span>'+fmt(Math.round(d.amt/10000))+'만원 <span style="color:#9ca3af">'+fmt(Math.round(d.qty))+'kg</span></span>')
+    .join('');
+
+  if(monthSummaryHtml){
+    html+='<div class="li" style="background:#f0f4ff;border-top:2px solid #1F3864">'+
+      '<div class="li-body">'+
+        '<div style="font-size:11px;font-weight:700;color:#1F3864;margin-bottom:4px">📊 월별 합계</div>'+
+        '<div class="li-amts">'+monthSummaryHtml+'</div>'+
+        '<div style="font-size:11px;font-weight:700;color:#1F3864;margin-top:4px">누적 합계: '+fmt(Math.round(totalAmt/10000))+'만원 · '+fmt(Math.round(totalQty))+'kg</div>'+
+      '</div>'+
+    '</div>';
+  }
+
   document.getElementById('nc-list').innerHTML=html||'<div class="li"><div class="li-body" style="color:#9ca3af">없음</div></div>';
 
   // 담당자 필터 채우기
